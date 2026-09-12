@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Decay!</title>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600&family=IBM+Plex+Sans:wght@400;500&display=swap');
@@ -79,6 +80,36 @@
     gap: 12px;
   }
 
+  .difficulty{
+    width: 100%;
+    margin: 0;
+    padding: 4px;
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    border: 1px solid var(--line);
+    border-radius: 8px;
+  }
+
+  .difficulty label{ position: relative; cursor: pointer; }
+  .difficulty input{
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    opacity: 0;
+    clip-path: inset(50%);
+  }
+  .difficulty span{
+    display: block;
+    padding: 9px 4px;
+    border-radius: 4px;
+    text-align: center;
+    font-size: 14px;
+    color: var(--ash);
+  }
+  .difficulty label:hover span{ color: var(--cream); }
+  .difficulty input:checked + span{ background: var(--amber-hi); color: var(--page); }
+  .difficulty input:focus-visible + span{ outline: 2px solid var(--ember); outline-offset: 2px; }
+
   .player-tag{
     display: flex;
     align-items: center;
@@ -142,7 +173,7 @@
     pointer-events: none;
   }
 
-  .stone.show{ opacity: var(--stone-op, 1); transform: scale(1); }
+  .stone.show{ opacity: 1; transform: scale(1); }
   .stone.decaying{
     animation: crumble-to-ash .72s ease forwards;
   }
@@ -249,6 +280,21 @@
   .stone.teal .x-glyph{color:var(--teal-hi);text-shadow:0 0 18px rgba(126,194,196,.22);}
   .stone.teal .x-glyph{font-family:'IBM Plex Sans',sans-serif;font-weight:500;}
 
+  .stone.expiring:not(.decaying) .x-glyph{
+    animation: decay-warning 1.6s ease-in-out infinite;
+  }
+  @keyframes decay-warning{
+    0%, 100%{ opacity: 1; }
+    50%{ opacity: .35; }
+  }
+  @media (prefers-reduced-motion: reduce){
+    .stone.expiring:not(.decaying) .x-glyph{
+      animation: none;
+      outline: 1px dashed currentColor;
+      outline-offset: 3px;
+    }
+  }
+
   .order{
     position:absolute;
     right:6%;
@@ -261,6 +307,7 @@
   }
   .stone.amber .order{color:var(--amber-hi);}
   .stone.teal .order{color:var(--teal-hi);}
+  .board[data-difficulty="hard"] .order{ display: none; }
 
 </style>
 </head>
@@ -268,6 +315,11 @@
 
 <div class="wrap">
   <h1 class="decay-title"><span>D</span><span>e</span><span>c</span><span>a</span><span>y</span></h1>
+  <fieldset class="difficulty" aria-label="Difficulty">
+    <label><input type="radio" name="difficulty" value="easy" checked><span>Easy</span></label>
+    <label><input type="radio" name="difficulty" value="medium"><span>Medium</span></label>
+    <label><input type="radio" name="difficulty" value="hard"><span>Hard</span></label>
+  </fieldset>
   <div class="statusbar">
     <div class="player-tag amber" id="tag1">
       <span class="x-mini amber-x">X</span>
@@ -297,6 +349,7 @@ const tag1 = document.getElementById('tag1');
 const tag2 = document.getElementById('tag2');
 
 let state, queues, current, winner, cellEls, stoneEls, moveCounters;
+let difficulty = 'easy';
 
 function init(){
   state = Array.from({length: SIZE}, () => Array(SIZE).fill(0));
@@ -360,7 +413,7 @@ function placeStone(r, c, player){
   const stone = stoneEls[i];
   stone.className = 'stone ' + (player === 1 ? 'amber' : 'teal');
   stone.querySelector('.x-glyph').textContent = player === 1 ? 'X' : 'O';
-  stone.querySelector('.order').textContent = moveCounters[player];
+  stone.querySelector('.order').textContent = difficulty === 'hard' ? '' : moveCounters[player];
   cellEls[i].classList.add('filled');
   requestAnimationFrame(() => stone.classList.add('show'));
 
@@ -426,18 +479,17 @@ function markWin(cells){
 }
 
 function updateUI(){
+  board.dataset.difficulty = difficulty;
   tag1.classList.toggle('active', current === 1 && !winner);
   tag2.classList.toggle('active', current === 2 && !winner);
+  stoneEls.forEach(stone => stone.classList.remove('expiring'));
 
   [1, 2].forEach(p => {
     queues[p].forEach(([r, c, order], i) => {
-      const n = queues[p].length;
-      const age = n - i;
-      const opacity = 0.78 + 0.22 * (age / Math.max(n,1));
       const stone = stoneEls[idx(r, c)];
       if(!stone.classList.contains('decaying')){
-        stone.style.setProperty('--stone-op', opacity.toFixed(2));
-        stone.querySelector('.order').textContent = order;
+        stone.classList.toggle('expiring', difficulty === 'easy' && !winner && queues[p].length === MAX_ALIVE && i === 0);
+        stone.querySelector('.order').textContent = difficulty === 'hard' ? '' : order;
       }
     });
   });
@@ -453,6 +505,12 @@ function updateUI(){
 }
 
 document.getElementById('restart').addEventListener('click', init);
+document.querySelectorAll('input[name="difficulty"]').forEach(input => {
+  input.addEventListener('change', () => {
+    difficulty = input.value;
+    updateUI();
+  });
+});
 init();
 </script>
 
