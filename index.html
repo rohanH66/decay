@@ -283,12 +283,28 @@
   .stone.expiring:not(.decaying)::after{
     content: '';
     position: absolute;
-    inset: -7%;
-    border: 2px solid var(--amber-hi);
+    inset: -7% 3%;
+    border: 3px solid var(--amber-hi);
     border-radius: 50%;
     pointer-events: none;
+    animation: decay-ring-flash 1.4s ease-in-out infinite;
   }
   .stone.teal.expiring::after{ border-color: var(--teal-hi); }
+
+  @keyframes decay-ring-flash{
+    0%, 100%{ opacity: 1; }
+    50%{ opacity: .15; }
+  }
+  @media (prefers-reduced-motion: reduce){
+    .stone.expiring:not(.decaying)::after{ animation: none; }
+  }
+
+  .stone.expiring .order{
+    z-index: 1;
+    opacity: 1;
+    background: var(--board-wood-light);
+    box-shadow: 0 0 0 3px var(--board-wood-light);
+  }
 
   .order{
     position:absolute;
