@@ -240,6 +240,40 @@
 
   button:hover{ border-color: var(--ember); background: #e2703f14; }
 
+  .simulation-controls{
+    width: 100%;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 108px;
+    gap: 10px;
+  }
+  .speed{ grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  #simulate[aria-pressed="true"]{ border-color: var(--ember); }
+  .repeat{ display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--ash); cursor: pointer; }
+  .repeat input{ accent-color: var(--amber-hi); }
+  .board.simulating .cell{ cursor: default; }
+  .board.fast .stone{ transition: none; }
+  #dev{
+    position: fixed;
+    right: 12px;
+    bottom: 12px;
+    padding: 5px 9px;
+    font-size: 11px;
+    background: var(--page);
+    color: var(--ash);
+  }
+  .dev-menu{
+    inset: auto 12px 48px auto;
+    margin: 0;
+    width: min(360px, calc(100% - 24px));
+    padding: 16px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--page);
+    color: var(--cream);
+  }
+  .dev-menu:popover-open{ display: grid; gap: 14px; }
+  .dev-menu h2{ margin: 0; font-size: 18px; font-weight: 500; }
+
   .legend{
     font-size: 12.5px;
     color: var(--ash);
@@ -351,6 +385,19 @@
   <p class="legend">Each player can keep 6 marks on the board. Player 1 uses X and Player 2 uses O. When a 7th is placed, the oldest disappears.</p>
 </div>
 
+<button id="dev" popovertarget="dev-menu">Dev</button>
+<div id="dev-menu" class="dev-menu" popover aria-labelledby="dev-title">
+  <h2 id="dev-title">Simulation</h2>
+  <div class="simulation-controls">
+    <fieldset class="difficulty speed" aria-label="Simulation speed">
+      <label title="1 move per second"><input type="radio" name="speed" value="normal" checked><span>Normal</span></label>
+      <label title="20 moves per second"><input type="radio" name="speed" value="fast"><span>Fast</span></label>
+    </fieldset>
+    <button id="simulate" aria-pressed="false">Simulate</button>
+  </div>
+  <label class="repeat"><input type="checkbox" id="repeat">Repeat games</label>
+</div>
+
 <script>
 const SIZE = 5;
 const MAX_ALIVE = 6;
@@ -358,11 +405,24 @@ const board = document.getElementById('board');
 const bannerEl = document.getElementById('banner');
 const tag1 = document.getElementById('tag1');
 const tag2 = document.getElementById('tag2');
+const simulateButton = document.getElementById('simulate');
+const repeatInput = document.getElementById('repeat');
+const WIN_LINES = [
+  ...Array.from({length: SIZE}, (_, r) => Array.from({length: SIZE}, (_, c) => [r, c])),
+  ...Array.from({length: SIZE}, (_, c) => Array.from({length: SIZE}, (_, r) => [r, c])),
+  Array.from({length: SIZE}, (_, i) => [i, i]),
+  Array.from({length: SIZE}, (_, i) => [i, SIZE - 1 - i])
+];
 
 let state, queues, current, winner, cellEls, stoneEls, moveCounters;
 let difficulty = 'easy';
+let simulationActive = false;
+let simulationTimer = null;
+let simulationSpeed = 'normal';
+let simulationMoves = 0;
 
 function init(){
+  simulationMoves = 0;
   state = Array.from({length: SIZE}, () => Array(SIZE).fill(0));
   queues = {1: [], 2: []};
   moveCounters = {1: 0, 2: 0};
@@ -398,10 +458,14 @@ function init(){
 function idx(r, c){ return r * SIZE + c; }
 
 function onCellClick(e){
-  if(winner) return;
+  if(simulationActive) return;
   const r = +e.currentTarget.dataset.r;
   const c = +e.currentTarget.dataset.c;
-  if(state[r][c] !== 0) return;
+  playMove(r, c);
+}
+
+function playMove(r, c){
+  if(winner || state[r][c] !== 0) return;
 
   placeStone(r, c, current);
 
@@ -432,15 +496,21 @@ function placeStone(r, c, player){
     const [or, oc] = queues[player].shift();
     const oi = idx(or, oc);
     const oldStone = stoneEls[oi];
-    oldStone.classList.add('decaying');
-    spawnAsh(cellEls[oi]);
-    setTimeout(() => {
-      state[or][oc] = 0;
-      oldStone.className = 'stone';
-      oldStone.querySelector('.x-glyph').textContent = '';
-      oldStone.querySelector('.order').textContent = '';
-      cellEls[oi].classList.remove('filled');
-    }, 760);
+    // Remove the mark before checking wins; animate an isolated visual copy.
+    state[or][oc] = 0;
+    if(!(simulationActive && simulationSpeed === 'fast')){
+      const fadingStone = oldStone.cloneNode(true);
+      fadingStone.classList.remove('expiring');
+      fadingStone.classList.add('decaying');
+      fadingStone.style.position = 'absolute';
+      cellEls[oi].appendChild(fadingStone);
+      spawnAsh(cellEls[oi]);
+      setTimeout(() => fadingStone.remove(), 760);
+    }
+    oldStone.className = 'stone';
+    oldStone.querySelector('.x-glyph').textContent = '';
+    oldStone.querySelector('.order').textContent = '';
+    cellEls[oi].classList.remove('filled');
   }
 }
 
@@ -472,16 +542,84 @@ function spawnAsh(cell){
   setTimeout(() => cloud.remove(), 1400);
 }
 
+function winningLine(position, player){
+  return WIN_LINES.find(line => line.every(([r, c]) => position[r][c] === player));
+}
+
 function checkWin(player){
+  const line = winningLine(state, player);
+  return line ? markWin(line) : false;
+}
+
+function positionAfterMove(position, r, c, player){
+  const next = position.map(row => row.slice());
+  next[r][c] = player;
+  if(queues[player].length === MAX_ALIVE){
+    const [oldR, oldC] = queues[player][0];
+    next[oldR][oldC] = 0;
+  }
+  return next;
+}
+
+function chooseComputerMove(){
+  const opponent = current === 1 ? 2 : 1;
+  let bestScore = -Infinity;
+  let bestMove;
+  const legalMoves = [];
   for(let r = 0; r < SIZE; r++){
-    if(state[r].every(v => v === player)) return markWin([...Array(SIZE).keys()].map(c => [r, c]));
+    for(let c = 0; c < SIZE; c++){
+      if(state[r][c] !== 0) continue;
+      legalMoves.push([r, c]);
+      const next = positionAfterMove(state, r, c, current);
+      if(winningLine(next, current)) return [r, c];
+      let score = Math.random() * 8;
+      for(const line of WIN_LINES){
+        const marks = line.map(([lr, lc]) => next[lr][lc]);
+        if(!marks.includes(opponent)) score += [0, 1, 4, 16, 64][marks.filter(p => p === current).length];
+      }
+      // Account for both players' next decay when looking for immediate threats.
+      for(let or = 0; or < SIZE; or++){
+        for(let oc = 0; oc < SIZE; oc++){
+          if(next[or][oc] === 0 && winningLine(positionAfterMove(next, or, oc, opponent), opponent)) score -= 1000;
+        }
+      }
+      if(score > bestScore){ bestScore = score; bestMove = [r, c]; }
+    }
   }
-  for(let c = 0; c < SIZE; c++){
-    if(state.every(row => row[c] === player)) return markWin([...Array(SIZE).keys()].map(r => [r, c]));
-  }
-  if([...Array(SIZE).keys()].every(i => state[i][i] === player)) return markWin([...Array(SIZE).keys()].map(i => [i, i]));
-  if([...Array(SIZE).keys()].every(i => state[i][SIZE - 1 - i] === player)) return markWin([...Array(SIZE).keys()].map(i => [i, SIZE - 1 - i]));
-  return false;
+  // Occasional exploratory moves break repeated defensive cycles between the bots.
+  return Math.random() < 0.2 ? legalMoves[Math.floor(Math.random() * legalMoves.length)] : bestMove;
+}
+
+function stopSimulation(){
+  clearTimeout(simulationTimer);
+  simulationTimer = null;
+  simulationActive = false;
+  updateUI();
+}
+
+function scheduleSimulation(){
+  clearTimeout(simulationTimer);
+  if(!simulationActive) return;
+  const roundOver = winner || simulationMoves >= 300;
+  const delay = roundOver ? (simulationSpeed === 'fast' ? 800 : 2200) : (simulationSpeed === 'fast' ? 50 : 1000);
+  simulationTimer = setTimeout(() => {
+    if(!simulationActive) return;
+    if(winner || simulationMoves >= 300){
+      if(!repeatInput.checked){ stopSimulation(); return; }
+      init();
+    }
+    const move = chooseComputerMove();
+    if(!move){ stopSimulation(); return; }
+    simulationMoves += 1;
+    playMove(...move);
+    if(simulationMoves >= 300 && !winner) bannerEl.textContent = 'Simulation move limit reached';
+    if((winner || simulationMoves >= 300) && !repeatInput.checked){
+      stopSimulation();
+      if(!winner) bannerEl.textContent = 'Simulation move limit reached';
+      return;
+    }
+    scheduleSimulation();
+  }, delay);
 }
 
 function markWin(cells){
@@ -490,6 +628,10 @@ function markWin(cells){
 }
 
 function updateUI(){
+  board.classList.toggle('simulating', simulationActive);
+  board.classList.toggle('fast', simulationActive && simulationSpeed === 'fast');
+  simulateButton.textContent = simulationActive ? 'Stop' : 'Simulate';
+  simulateButton.setAttribute('aria-pressed', String(simulationActive));
   board.dataset.difficulty = difficulty;
   tag1.classList.toggle('active', current === 1 && !winner);
   tag2.classList.toggle('active', current === 2 && !winner);
@@ -515,7 +657,25 @@ function updateUI(){
   }
 }
 
-document.getElementById('restart').addEventListener('click', init);
+document.getElementById('restart').addEventListener('click', () => {
+  stopSimulation();
+  init();
+});
+simulateButton.addEventListener('click', () => {
+  document.getElementById('dev-menu').hidePopover();
+  if(simulationActive){ stopSimulation(); return; }
+  simulationActive = true;
+  init();
+  scheduleSimulation();
+});
+document.querySelectorAll('input[name="speed"]').forEach(input => {
+  input.addEventListener('change', () => {
+    simulationSpeed = input.value;
+    if(simulationSpeed === 'fast') board.querySelectorAll('.decaying, .ash-cloud').forEach(el => el.remove());
+    updateUI();
+    scheduleSimulation();
+  });
+});
 document.querySelectorAll('input[name="difficulty"]').forEach(input => {
   input.addEventListener('change', () => {
     difficulty = input.value;
