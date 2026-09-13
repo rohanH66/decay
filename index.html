@@ -391,7 +391,7 @@
   <div class="simulation-controls">
     <fieldset class="difficulty speed" aria-label="Simulation speed">
       <label title="1 move per second"><input type="radio" name="speed" value="normal" checked><span>Normal</span></label>
-      <label title="20 moves per second"><input type="radio" name="speed" value="fast"><span>Fast</span></label>
+      <label title="30 moves per second"><input type="radio" name="speed" value="fast"><span>Fast</span></label>
     </fieldset>
     <button id="simulate" aria-pressed="false">Simulate</button>
   </div>
@@ -401,6 +401,7 @@
 <script>
 const SIZE = 5;
 const MAX_ALIVE = 6;
+const SIMULATION_MOVE_LIMIT = 600;
 const board = document.getElementById('board');
 const bannerEl = document.getElementById('banner');
 const tag1 = document.getElementById('tag1');
@@ -551,43 +552,93 @@ function checkWin(player){
   return line ? markWin(line) : false;
 }
 
-function positionAfterMove(position, r, c, player){
-  const next = position.map(row => row.slice());
-  next[r][c] = player;
-  if(queues[player].length === MAX_ALIVE){
-    const [oldR, oldC] = queues[player][0];
-    next[oldR][oldC] = 0;
-  }
-  return next;
-}
-
 function chooseComputerMove(){
-  const opponent = current === 1 ? 2 : 1;
-  let bestScore = -Infinity;
-  let bestMove;
-  const legalMoves = [];
-  for(let r = 0; r < SIZE; r++){
-    for(let c = 0; c < SIZE; c++){
-      if(state[r][c] !== 0) continue;
-      legalMoves.push([r, c]);
-      const next = positionAfterMove(state, r, c, current);
-      if(winningLine(next, current)) return [r, c];
-      let score = Math.random() * 8;
-      for(const line of WIN_LINES){
-        const marks = line.map(([lr, lc]) => next[lr][lc]);
-        if(!marks.includes(opponent)) score += [0, 1, 4, 16, 64][marks.filter(p => p === current).length];
-      }
-      // Account for both players' next decay when looking for immediate threats.
-      for(let or = 0; or < SIZE; or++){
-        for(let oc = 0; oc < SIZE; oc++){
-          if(next[or][oc] === 0 && winningLine(positionAfterMove(next, or, oc, opponent), opponent)) score -= 1000;
-        }
-      }
-      if(score > bestScore){ bestScore = score; bestMove = [r, c]; }
-    }
+  const position = state.flat();
+  const order = {1: queues[1].map(([r, c]) => idx(r, c)), 2: queues[2].map(([r, c]) => idx(r, c))};
+  const lines = WIN_LINES.map(line => line.map(([r, c]) => idx(r, c)));
+  const weights = [0, 2, 12, 70, 500, 100000];
+  const winScore = weights[SIZE];
+
+  // Search uses its own board and queues, including every future expiration.
+  function apply(move, player){
+    const expired = order[player].length === MAX_ALIVE ? order[player].shift() : undefined;
+    if(expired !== undefined) position[expired] = 0;
+    position[move] = player;
+    order[player].push(move);
+    return expired;
   }
-  // Occasional exploratory moves break repeated defensive cycles between the bots.
-  return Math.random() < 0.2 ? legalMoves[Math.floor(Math.random() * legalMoves.length)] : bestMove;
+
+  function undo(move, player, expired){
+    order[player].pop();
+    position[move] = 0;
+    if(expired !== undefined){ order[player].unshift(expired); position[expired] = player; }
+  }
+
+  function evaluate(player, attackOnly = false){
+    let score = 0;
+    for(const line of lines){
+      let amber = 0, teal = 0;
+      for(const cell of line){
+        if(position[cell] === 1) amber++;
+        if(position[cell] === 2) teal++;
+      }
+      if(amber === SIZE) return player === 1 ? winScore : -winScore;
+      if(teal === SIZE) return player === 2 ? winScore : -winScore;
+      if(amber && teal) continue;
+      const owner = amber ? 1 : 2;
+      const fading = order[owner].length === MAX_ALIVE && line.includes(order[owner][0]);
+      if(!attackOnly || owner === player) score += (owner === player ? 1 : -1) * weights[amber || teal] * (fading ? 0.25 : 1);
+    }
+    return score;
+  }
+
+  function rankedMoves(player, attackOnly = false){
+    const moves = [];
+    for(let move = 0; move < position.length; move++){
+      if(position[move] !== 0) continue;
+      const expired = apply(move, player);
+      moves.push({move, score: evaluate(player, attackOnly)});
+      undo(move, player, expired);
+    }
+    return moves.sort((a, b) => b.score - a.score);
+  }
+
+  function search(depth, player, alpha, beta){
+    if(depth === 0) return evaluate(player);
+    let best = -Infinity;
+    for(const {move, score} of rankedMoves(player)){
+      if(score >= winScore) return winScore + depth;
+      const expired = apply(move, player);
+      const value = -search(depth - 1, 3 - player, -beta, -alpha);
+      undo(move, player, expired);
+      best = Math.max(best, value);
+      alpha = Math.max(alpha, value);
+      if(alpha >= beta) break;
+    }
+    return best;
+  }
+
+  let bestScore = -Infinity;
+  let bestMoves = [];
+  const alternatives = [];
+  const candidates = rankedMoves(current);
+  for(const {move, score} of candidates){
+    if(score >= winScore) return [Math.floor(move / SIZE), move % SIZE];
+    const expired = apply(move, current);
+    const value = -search(2, 3 - current, -Infinity, Infinity);
+    undo(move, current, expired);
+    alternatives.push({move, score: value});
+    if(value > bestScore){ bestScore = value; bestMoves = [move]; }
+    else if(value === bestScore) bestMoves.push(move);
+  }
+  // Mostly use lookahead; occasional greedy moves let otherwise defensive games resolve.
+  const reasonable = alternatives.filter(candidate => candidate.score > -winScore)
+    .sort((a, b) => b.score - a.score).slice(0, 6).map(candidate => candidate.move);
+  const variety = Math.random();
+  const choices = variety < 0.05 ? rankedMoves(current, true).slice(0, 3).map(candidate => candidate.move)
+    : reasonable.length && variety < 0.25 ? reasonable : bestMoves;
+  const move = choices[Math.floor(Math.random() * choices.length)];
+  return move === undefined ? undefined : [Math.floor(move / SIZE), move % SIZE];
 }
 
 function stopSimulation(){
@@ -597,28 +648,29 @@ function stopSimulation(){
   updateUI();
 }
 
-function scheduleSimulation(){
+function scheduleSimulation(elapsed = 0){
   clearTimeout(simulationTimer);
   if(!simulationActive) return;
-  const roundOver = winner || simulationMoves >= 300;
-  const delay = roundOver ? (simulationSpeed === 'fast' ? 800 : 2200) : (simulationSpeed === 'fast' ? 50 : 1000);
+  const roundOver = winner || simulationMoves >= SIMULATION_MOVE_LIMIT;
+  const delay = roundOver ? (simulationSpeed === 'fast' ? 800 : 2200) : Math.max(0, (simulationSpeed === 'fast' ? 1000 / 30 : 1000) - elapsed);
   simulationTimer = setTimeout(() => {
     if(!simulationActive) return;
-    if(winner || simulationMoves >= 300){
+    if(winner || simulationMoves >= SIMULATION_MOVE_LIMIT){
       if(!repeatInput.checked){ stopSimulation(); return; }
       init();
     }
+    const turnStartedAt = performance.now();
     const move = chooseComputerMove();
     if(!move){ stopSimulation(); return; }
     simulationMoves += 1;
     playMove(...move);
-    if(simulationMoves >= 300 && !winner) bannerEl.textContent = 'Simulation move limit reached';
-    if((winner || simulationMoves >= 300) && !repeatInput.checked){
+    if(simulationMoves >= SIMULATION_MOVE_LIMIT && !winner) bannerEl.textContent = 'Simulation move limit reached';
+    if((winner || simulationMoves >= SIMULATION_MOVE_LIMIT) && !repeatInput.checked){
       stopSimulation();
       if(!winner) bannerEl.textContent = 'Simulation move limit reached';
       return;
     }
-    scheduleSimulation();
+    scheduleSimulation(performance.now() - turnStartedAt);
   }, delay);
 }
 
